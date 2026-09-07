@@ -50,6 +50,8 @@ class Users {
   }
 
   async bootstrapServicesForAllUsers(): Promise<void> {
+    await this.db.autoloadPromise;
+
     return this.listUsers()
       .then((users) => Promise.all(users.map((user) => bootstrapServicesForUser(user))))
       .then(() => undefined);

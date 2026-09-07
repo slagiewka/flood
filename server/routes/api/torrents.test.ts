@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import readline from 'node:readline';
 import stream from 'node:stream';
+import {setTimeout} from 'node:timers/promises';
 
 import axios from 'axios';
 import MockAdapter from 'axios-mock-adapter';
@@ -46,6 +47,18 @@ beforeAll(async () => {
     .accept('text/event-stream')
     .pipe(activityStream);
 });
+
+const getTorrentList = async (): Promise<TorrentList> => {
+  const res = await request
+    .get('/api/torrents')
+    .send()
+    .set('Cookie', [authToken])
+    .set('Accept', 'application/json')
+    .expect(200)
+    .expect('Content-Type', /json/);
+
+  return res.body.torrents as TorrentList;
+};
 
 const tempDirectory = getTempPath('download');
 
@@ -148,21 +161,32 @@ describe('POST /api/torrents/add-urls', () => {
 
     // Continue after 15 seconds even if torrentAdded is not resolved to let the next step
     // determine if the torrents have been successfully added.
-    await Promise.race([torrentAdded, new Promise((r) => setTimeout(r, 1000 * 15))]);
-    await new Promise((r) => setTimeout(r, 1000 * 3));
+    await Promise.race([torrentAdded, setTimeout(1000 * 15)]);
   });
 
   it('GET /api/torrents to verify torrents are added via URLs', async () => {
-    const res = await request
-      .get('/api/torrents')
-      .send()
-      .set('Cookie', [authToken])
-      .set('Accept', 'application/json')
-      .expect(200)
-      .expect('Content-Type', /json/);
+    await expect
+      .poll(
+        async () => {
+          const torrentList = await getTorrentList();
+          const addedTorrents = Object.values(torrentList).filter((torrent) =>
+            addTorrentByURLOptions.tags?.every((tag) => torrent.tags.includes(tag)),
+          );
 
-    expect(res.body.torrents).not.toBeNull();
-    const torrentList: TorrentList = res.body.torrents;
+          const expectedStatuses: Array<TorrentStatus> = addTorrentByURLOptions.start
+            ? ['downloading']
+            : ['stopped', 'inactive'];
+
+          return (
+            addedTorrents.length === addTorrentByURLOptions.urls.length &&
+            addedTorrents.every((torrent) => expectedStatuses.every((status) => torrent.status.includes(status)))
+          );
+        },
+        {timeout: 15000, interval: 100},
+      )
+      .toBe(true);
+
+    const torrentList = await getTorrentList();
 
     const addedTorrents = Object.values(torrentList).filter((torrent) =>
       addTorrentByURLOptions.tags?.every((tag) => torrent.tags.includes(tag)),
@@ -187,7 +211,6 @@ describe('POST /api/torrents/add-urls', () => {
 });
 
 describe('POST /api/torrents/delete', () => {
-  const torrentDeleted = watchTorrentList('remove');
   it('Deletes added torrents', async () => {
     await request
       .post('/api/torrents/delete')
@@ -197,8 +220,15 @@ describe('POST /api/torrents/delete', () => {
       .expect(200)
       .expect('Content-Type', /json/);
 
-    await Promise.race([torrentDeleted, new Promise((r) => setTimeout(r, 1000 * 15))]);
-    await new Promise((r) => setTimeout(r, 1000 * 3));
+    await expect
+      .poll(
+        async () => {
+          const torrentList = await getTorrentList();
+          return torrentHashes.every((hash) => torrentList[hash] == null);
+        },
+        {timeout: 15000, interval: 100},
+      )
+      .toBe(true);
   });
 });
 
@@ -447,10 +477,7 @@ describe('POST /api/torrents/move', () => {
       .set('Accept', 'application/json')
       .expect(200);
 
-    // Wait a while
-    await new Promise((r) => setTimeout(r, 1000 * 2));
-
-    expect(fs.existsSync(path.join(destDirectory, 'dummy'))).toBe(true);
+    await expect.poll(() => fs.existsSync(path.join(destDirectory, 'dummy')), {timeout: 2000}).toBe(true);
   });
 
   it('GET /api/torrents to verify torrent is moved', async () => {

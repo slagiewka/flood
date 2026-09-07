@@ -40,7 +40,7 @@ const config = {
   floodServerHost: '127.0.0.1',
   floodServerPort: 3000,
   maxHistoryStates: 30,
-  torrentClientPollInterval: 1000 * 2,
+  torrentClientPollInterval: 100,
   torrentClientPollIntervalIdle: 1000 * 60 * 15,
   secret: crypto.randomBytes(36).toString('hex'),
   ssl: false,
@@ -65,7 +65,21 @@ const qBittorrentDaemon = spawn(
   },
 );
 
-afterAll(() => {
+afterAll(async () => {
+  const processClosed = new Promise((resolve) => {
+    if (qBittorrentDaemon.exitCode !== null || qBittorrentDaemon.signalCode !== null) {
+      resolve();
+      return;
+    }
+
+    qBittorrentDaemon.once('close', resolve);
+  });
+
   qBittorrentDaemon.kill('SIGKILL');
-  fs.rmSync(temporaryRuntimeDirectory, {recursive: true, force: true});
+  await processClosed;
+
+  const {destroyUserServices} = await import('../services');
+  await destroyUserServices('_config', true);
+
+  fs.rmSync(temporaryRuntimeDirectory, {recursive: true, force: true, maxRetries: 10, retryDelay: 100});
 });

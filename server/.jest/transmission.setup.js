@@ -32,7 +32,7 @@ const config = {
   floodServerHost: '127.0.0.1',
   floodServerPort: 3000,
   maxHistoryStates: 30,
-  torrentClientPollInterval: 1000 * 2,
+  torrentClientPollInterval: 100,
   torrentClientPollIntervalIdle: 1000 * 60 * 15,
   secret: crypto.randomBytes(36).toString('hex'),
   ssl: false,
@@ -70,14 +70,22 @@ const transmissionProcess = spawn(
 );
 
 afterAll(async () => {
-  await new Promise((resolve) => {
-    transmissionProcess.on('close', resolve);
-    transmissionProcess.kill('SIGKILL');
+  const processClosed = new Promise((resolve) => {
+    if (transmissionProcess.exitCode !== null || transmissionProcess.signalCode !== null) {
+      resolve();
+      return;
+    }
+
+    transmissionProcess.once('close', resolve);
   });
 
+  transmissionProcess.kill('SIGKILL');
+  await processClosed;
+
+  const {destroyUserServices} = await import('../services');
+  await destroyUserServices('_config', true);
+
   if (process.env.CI !== 'true') {
-    // TODO: This leads to test flakiness caused by ENOENT error
-    // NeDB provides no method to close database connection
-    fs.rmSync(temporaryRuntimeDirectory, {recursive: true, force: true});
+    fs.rmSync(temporaryRuntimeDirectory, {recursive: true, force: true, maxRetries: 10, retryDelay: 100});
   }
 });
